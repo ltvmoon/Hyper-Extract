@@ -129,21 +129,28 @@ class CompatibleEmbeddings(Embeddings):
         all_embeddings: List[Optional[List[float]]] = [None] * len(texts)
         batch: List[Tuple[str, int]] = []
 
+        # Accumulate a running sum and count per text so multi-chunk texts get a
+        # true mean. A pairwise (prev + curr) / 2 only yields the mean for two
+        # chunks; for three or more it biases toward later chunks.
+        sums: Dict[int, List[float]] = {}
+        counts: Dict[int, int] = {}
+
         def _embed_batch(b: List[Tuple[str, int]]) -> None:
             response = self._client.embeddings.create(
                 input=[text for text, _ in b],
                 model=self._model,
             )
             for (text, orig_idx), emb_data in zip(b, response.data, strict=False):
-                if all_embeddings[orig_idx] is None:
-                    all_embeddings[orig_idx] = emb_data.embedding
+                emb = emb_data.embedding
+                if orig_idx not in sums:
+                    sums[orig_idx] = list(emb)
+                    counts[orig_idx] = 1
                 else:
-                    # Average embeddings for multi-chunk texts
-                    prev = all_embeddings[orig_idx]
-                    curr = emb_data.embedding
-                    all_embeddings[orig_idx] = [
-                        (a + b) / 2 for a, b in zip(prev, curr, strict=False)
+                    running = sums[orig_idx]
+                    sums[orig_idx] = [
+                        a + b for a, b in zip(running, emb, strict=False)
                     ]
+                    counts[orig_idx] += 1
 
         for chunk in chunks:
             batch.append(chunk)
@@ -153,6 +160,11 @@ class CompatibleEmbeddings(Embeddings):
 
         if batch:
             _embed_batch(batch)
+
+        # Divide each running sum by its chunk count to get the mean embedding.
+        for orig_idx, running in sums.items():
+            count = counts[orig_idx]
+            all_embeddings[orig_idx] = [v / count for v in running]
 
         # Fill in any missing embeddings with empty-string embedding
         missing_indices = [i for i, e in enumerate(all_embeddings) if e is None]
