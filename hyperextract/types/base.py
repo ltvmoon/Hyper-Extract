@@ -625,7 +625,21 @@ class BaseAutoType(ABC, Generic[T]):
         path = Path(file_path)
         with open(path, "r", encoding="utf-8") as f:
             params = json.load(f)
-            self.metadata.update(params)
+
+        # Timestamps are serialized as ISO strings (dump_metadata uses
+        # default=str). Restore them to datetime so a loaded instance behaves
+        # like a freshly created one; otherwise comparisons such as the
+        # min(created_at, ...) merge in __add__ raise TypeError when a loaded
+        # instance (str) is combined with a fresh one (datetime).
+        for key in ("created_at", "updated_at"):
+            value = params.get(key)
+            if isinstance(value, str):
+                try:
+                    params[key] = datetime.fromisoformat(value)
+                except ValueError:
+                    pass
+
+        self.metadata.update(params)
 
     @abstractmethod
     def dump_index(self, folder_path: str | Path) -> None:
